@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>簡易 MIDI 鋼琴鍵盤（C4–B5）</title>
+<style>
+  :root{
+    --white-w: 48px;
+    --white-h: 180px;
+    --black-w: 30px;
+    --black-h: 110px;
+    --gap: 2px;
+    --accent: #4b8cf7;
+  }
+  body{font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans TC", sans-serif; background:#f6f7fb; color:#222; margin:20px}
+  h1{font-size:18px;margin:0 0 12px}
+  .panel{margin:10px 0 14px; display:flex; gap:12px; align-items:center; flex-wrap:wrap}
+  .kbd{padding:2px 6px; border:1px solid #ddd; border-radius:6px; background:#fff; font-family:ui-monospace,Consolas,monospace}
+  #piano-wrap{display:inline-block; padding:14px; background:#fff; border:1px solid #e6e8ef; border-radius:14px; box-shadow:0 6px 30px rgba(17,24,39,.08)}
+  #piano{position:relative; user-select:none}
+  .white-keys{display:flex}
+  .key.white{
+    width:var(--white-w); height:var(--white-h);
+    background:linear-gradient(#fff,#f0f0f0);
+    border:1px solid #d9dbe7; border-radius:0 0 8px 8px;
+    margin-right:var(--gap); box-sizing:border-box; position:relative;
+  }
+  .key.white.active{background:linear-gradient(#e9f0ff,#dbe7ff); box-shadow:inset 0 0 0 2px var(--accent)}
+  .black-keys{position:absolute; left:0; top:0; height:0; pointer-events:none}
+  .key.black{
+    position:absolute; top:0; width:var(--black-w); height:var(--black-h);
+    background:linear-gradient(#222,#111); border:1px solid #0007;
+    border-radius:0 0 6px 6px; z-index:3; pointer-events:auto;
+    box-shadow:inset 0 -2px 0 rgba(255,255,255,.05), 0 6px 12px rgba(0,0,0,.25);
+  }
+  .key.black.active{background:linear-gradient(#243a73,#1b2a52)}
+  .key-label{
+    position:absolute; left:50%; transform:translateX(-50%); bottom:8px;
+    font-size:12px; color:#444; background:#ffffffc0; padding:2px 6px; border-radius:6px
+  }
+  .black .key-label{color:#eee; background:#00000060}
+  input[type="range"]{vertical-align:middle}
+  button, input[type="checkbox"]{padding:6px 10px; border:1px solid #d9dbe7; border-radius:8px; background:#fff}
+  .status{margin-top:8px; font-size:13px; color:#555}
+</style>
+</head>
+<body>
+<h1>🎹 簡易 MIDI 鋼琴鍵盤（C4–B5，2 個八度）</h1>
+
+<div class="panel">
+  <label>音量
+    <input id="volume" type="range" min="0" max="1" step="0.01" value="0.6">
+    <span id="volVal" class="kbd">0.60</span>
+  </label>
+  <label><input id="sustain" type="checkbox"> 延音（Sustain）</label>
+  <button id="panic">全部停止</button>
+  <span class="kbd">鍵盤：Z X C V B N M , . /（白）｜S D G H J（黑）</span>
+</div>
+
+<div id="piano-wrap">
+  <div id="piano">
+    <div class="white-keys" id="white"></div>
+    <div class="black-keys" id="black"></div>
+  </div>
+  <div class="status" id="status">狀態：準備中…</div>
+</div>
+
+<script>
+/* ===== 固定數值，避免版面跑掉 ===== */
+const WHITE_W = 48, WHITE_H = 180, GAP = 2;
+const BLACK_W = 30, BLACK_H = 110;
+const START_MIDI = 60; // C4
+const OCTAVES = 2;     // 2 個八度
+const END_MIDI = START_MIDI + OCTAVES*12 - 1;
+
+const isBlack = m => [1,3,6,8,10].includes(m % 12);
+const noteName = m => (['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'][m%12]) + (Math.floor(m/12)-1);
+
+/* ===== 產生鍵 ===== */
+const white = document.getElementById('white');
+const black = document.getElementById('black');
+const whitePositions = []; // 每個白鍵的左側 x
+
+// 建白鍵（直接用 flex，無任何 left 計算）
+for (let m=START_MIDI; m<=END_MIDI; m++){
+  if (!isBlack(m)){
+    const el = document.createElement('div');
+    el.className = 'key white';
+    el.dataset.midi = m;
+    el.innerHTML = `<div class="key-label">${noteName(m)}</div>`;
+    white.appendChild(el);
+  }
+}
+// 記錄白鍵的 x 位置（用索引*寬度直接算）
+[...white.children].forEach((_, i)=>{
+  whitePositions.push(i * (WHITE_W + GAP));
+});
+
+// 設容器寬度，確保可見
+const whiteCount = white.children.length;
+const totalW = whiteCount * (WHITE_W + GAP);
+document.getElementById('piano').style.width = totalW + 'px';
+black.style.width = totalW + 'px';
+
+// 建黑鍵：放在左側白鍵的 70% 處
+for (let m=START_MIDI; m<=END_MIDI; m++){
+  if (isBlack(m)){
+    // 找到它左邊的白鍵是誰
+    let leftWhiteMidi = m - 1;
+    while (leftWhiteMidi >= START_MIDI && isBlack(leftWhiteMidi)) leftWhiteMidi--;
+    // 找到該白鍵的索引
+    let idx = [...white.children].findIndex(el => parseInt(el.dataset.midi) === leftWhiteMidi);
+    if (idx >= 0){
+      const el = document.createElement('div');
+      el.className = 'key black';
+      el.dataset.midi = m;
+      // x = 該白鍵左側 + 白鍵寬 * 0.70 - 黑鍵半寬
+      const x = whitePositions[idx] + WHITE_W * 0.70 - BLACK_W/2;
+      el.style.left = x + 'px';
+      el.innerHTML = `<div class="key-label">${noteName(m)}</div>`;
+      black.appendChild(el);
+    }
+  }
+}
+
+/* ===== 點擊/拖曳演奏 ===== */
+function setKeyActive(m, on){
+  const el = document.querySelector(`.key[data-midi="${m}"]`);
+  if (el) el.classList.toggle('active', on);
+}
+let mouseDownMidi = null;
+document.getElementById('piano-wrap').addEventListener('mousedown', e=>{
+  const key = e.target.closest('.key'); if (!key) return;
+  const m = parseInt(key.dataset.midi);
+  noteOn(m); mouseDownMidi = m;
+});
+document.addEventListener('mouseup', ()=>{
+  if (mouseDownMidi!=null){ noteOff(mouseDownMidi); mouseDownMidi=null; }
+});
+document.getElementById('piano-wrap').addEventListener('mousemove', e=>{
+  if (mouseDownMidi==null) return;
+  const key = e.target.closest('.key'); if (!key) return;
+  const m = parseInt(key.dataset.midi);
+  if (m !== mouseDownMidi){ noteOff(mouseDownMidi); noteOn(m); mouseDownMidi = m; }
+});
+
+/* ===== 鍵盤對應 ===== */
+const KEYBOARD_MAP = {
+  'z':60,'x':62,'c':64,'v':65,'b':67,'n':69,'m':71, ',':72,'.':74,'/':76,
+  's':61,'d':63,'g':66,'h':68,'j':70
+};
+const downKeys = new Set();
+const mapKey = k => KEYBOARD_MAP[k.toLowerCase()] ?? null;
+
+document.addEventListener('keydown', e=>{
+  if (e.repeat) return;
+  const m = mapKey(e.key); if (m==null) return;
+  e.preventDefault();
+  if (!downKeys.has(e.key)){ downKeys.add(e.key); noteOn(m); }
+});
+document.addEventListener('keyup', e=>{
+  const m = mapKey(e.key); if (m==null) return;
+  e.preventDefault();
+  downKeys.delete(e.key); noteOff(m);
+});
+
+/* ===== WebAudio ===== */
+const AudioCtx = window.AudioContext || window.webkitAudioContext;
+let ctx, master, volNode;
+let activeVoices = new Map();
+let sustained = new Set();
+const volume = document.getElementById('volume');
+const volVal = document.getElementById('volVal');
+const sustain = document.getElementById('sustain');
+const statusEl = document.getElementById('status');
+
+function initAudio(){
+  if (ctx) return;
+  ctx = new AudioCtx();
+  master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination);
+  volNode = ctx.createGain(); volNode.gain.value = parseFloat(volume.value); volNode.connect(master);
+  statusEl.textContent = '狀態：WebAudio 就緒';
+}
+
+function midiToFreq(m){ return 440 * Math.pow(2, (m-69)/12); }
+function envOn(g){ const t=ctx.currentTime; g.gain.cancelScheduledValues(t); g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(1,t+0.01); }
+function envOff(g){ const t=ctx.currentTime; g.gain.cancelScheduledValues(t); const rel = sustain.checked?0.45:0.12; g.gain.linearRampToValueAtTime(0,t+rel); }
+
+function noteOn(m){
+  initAudio();
+  if (activeVoices.has(m)) return;
+  const osc = ctx.createOscillator(), g = ctx.createGain();
+  osc.type='sine'; osc.frequency.value = midiToFreq(m);
+  osc.connect(g); g.connect(volNode);
+  envOn(g); osc.start();
+  activeVoices.set(m,{osc,g});
+  setKeyActive(m,true);
+}
+function noteOff(m){
+  const v = activeVoices.get(m); if (!v) return;
+  if (sustain.checked){ sustained.add(m); }
+  else {
+    envOff(v.g); v.osc.stop(ctx.currentTime+0.5);
+    setTimeout(()=>activeVoices.delete(m),600);
+  }
+  setKeyActive(m,false);
+}
+function allNotesOff(){
+  sustained.clear();
+  for (const [m,v] of activeVoices){ envOff(v.g); v.osc.stop(ctx.currentTime+0.2); }
+  activeVoices.clear();
+  document.querySelectorAll('.key.active').forEach(k=>k.classList.remove('active'));
+}
+
+document.getElementById('panic').addEventListener('click', ()=>{ initAudio(); allNotesOff(); });
+volume.addEventListener('input', ()=>{
+  if (!ctx) initAudio();
+  volNode.gain.value = parseFloat(volume.value);
+  volVal.textContent = parseFloat(volume.value).toFixed(2);
+});
+sustain.addEventListener('change', ()=>{
+  if (!sustain.checked){
+    for (const m of sustained){
+      const v = activeVoices.get(m);
+      if (v){ envOff(v.g); v.osc.stop(ctx.currentTime+0.4); activeVoices.delete(m); }
+      setKeyActive(m,false);
+    }
+    sustained.clear();
+  }
+});
+
+statusEl.textContent = '狀態：就緒。用滑鼠或鍵盤演奏。';
+</script>
+</body>
+</html>
